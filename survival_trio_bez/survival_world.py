@@ -1,112 +1,31 @@
-"""Three-team survival sim with biomes, size penalties, and co-evolved brains.
+"""World rules for the simple three-team survival simulation."""
 
-Each team has a single creature controlled by a 10-float genome:
-  g[0] food pull
-  g[1] hunger urgency multiplier
-  g[2] aggression vs nearest enemy (size-modulated)
-  g[3] random noise level
-  g[4] stay-still penalty
-  g[5] aggression vs second enemy
-  g[6] wall repulsion
-  g[7] mountain pull   (mountains double a cell's combat weight)
-  g[8] river pull      (river cells freeze hunger)
-  g[9] oversize food aversion (eat-less when too big)
-
-Map: 70x70 board with 2 biome types spawned in random patches:
-  - Mountain (gray): each body cell on a mountain counts as 2 for combat
-    size comparison. Offensive AND defensive boost.
-  - River   (cyan): if any body cell touches a river this step, hunger does
-    NOT increment. Lets a creature park on water and not starve.
-
-Size penalty (oversize sucks):
-  - BIG_SIZE_THRESHOLD = 25.
-  - Slower: move period = 1 + (size - threshold) // 5. Size 30 -> moves
-    every 2 frames; size 35 -> every 3.
-  - Weaker: cells beyond threshold count 0.5 instead of 1 in combat size.
-
-Live training:
-  - Champion-vs-champion demo runs in real time. Headless GA between
-    demos updates champions. Fitness curves on the right.
-
-Match ends when <=1 team alive OR STALEMATE_CAP reached.
-
-Fitness for team t:
-    W_KILL * kills + W_FOOD * food + W_SIZE * final_size
-    + W_SURV * steps_survived + (WIN_BONUS if last alive at end)
-
-Survival weight dominates (W_SURV=1, W_KILL=2, W_FOOD=1, W_SIZE=0.5).
-"""
-
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 import numpy as np
 
-# ----- config -----
-SEED = None
+from survival_common import (
+    BIG_SIZE_THRESHOLD,
+    BIOME_PATCH_RADIUS,
+    BOARD,
+    CARDINALS,
+    CORNERS,
+    FOOD_TARGET,
+    INIT_BODY_SIZE,
+    MAX_HUNGER,
+    N_MOUNTAIN_PATCHES,
+    N_RIVER_PATCHES,
+    OVERSIZE_COMBAT_FACTOR,
+    SIZE_SLOWDOWN_STEP,
+    SPAWN_TRIES,
+    STALEMATE_CAP,
+    STARVE_PERIOD,
+    W_FOOD,
+    W_KILL,
+    W_SIZE,
+    W_SURV,
+    WALL_REPULSION_RANGE,
+    WIN_BONUS,
+)
 
-BOARD = 70
-INIT_BODY_SIZE = 4
-MAX_HUNGER = 40
-STARVE_PERIOD = 5
-FOOD_TARGET = 50
-SPAWN_TRIES = 3
-STALEMATE_CAP = 600
-
-# biomes
-N_MOUNTAIN_PATCHES = 5
-N_RIVER_PATCHES = 4
-BIOME_PATCH_RADIUS = (2, 4)  # min, max radius for a patch
-
-# oversize
-BIG_SIZE_THRESHOLD = 25
-SIZE_SLOWDOWN_STEP = 5     # 1 extra skip frame per N cells over threshold
-OVERSIZE_COMBAT_FACTOR = 0.5  # each excess cell counts this much in combat
-
-GENOME_SIZE = 10
-POP = 24
-GENERATIONS = 100
-TOURNAMENT_K = 4
-ELITE = 2
-MUT_SIGMA = 0.3
-MUT_RATE = 0.5
-
-W_KILL = 2.0
-W_FOOD = 1.0
-W_SIZE = 0.5
-W_SURV = 1.0
-WIN_BONUS = 200.0
-
-WALL_REPULSION_RANGE = 4
-
-FRAME_INTERVAL = 50
-STEPS_PER_FRAME = 3
-
-TEAM_COLORS = [
-    (1.0, 0.2, 0.2),   # red
-    (1.0, 0.85, 0.1),  # yellow
-    (0.7, 0.3, 1.0),   # purple
-]
-FOOD_COLOR = (0.2, 0.85, 0.2)
-MOUNTAIN_COLOR = (0.55, 0.55, 0.58)
-RIVER_COLOR = (0.35, 0.7, 0.95)
-EMPTY_COLOR = (0.97, 0.97, 0.95)
-LABELS = ["red", "yellow", "purple"]
-
-CARDINALS = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
-CORNERS = [(2, 2), (2, BOARD - 5), (BOARD - 5, BOARD // 2 - 1)]
-
-EMPTY_COLOR_ARR = np.array(EMPTY_COLOR)
-FOOD_COLOR_ARR = np.array(FOOD_COLOR)
-MOUNTAIN_COLOR_ARR = np.array(MOUNTAIN_COLOR)
-RIVER_COLOR_ARR = np.array(RIVER_COLOR)
-TEAM_COLOR_ARR = np.array(TEAM_COLORS)
-
-_seed_seq = np.random.SeedSequence(SEED)
-print(f"[seed] {_seed_seq.entropy}")
-rng = np.random.default_rng(_seed_seq)
-
-
-# ----- creature + helpers -----
 
 class Creature:
     __slots__ = ("team_id", "cells", "hunger", "alive", "move_skip_counter")
@@ -147,7 +66,7 @@ def _free_cell(rng_, occupied):
 
 
 def _spawn_biomes(rng_):
-    """Spawn mountain + river patches (disjoint). Avoid corners."""
+    """Spawn mountain and river patches, avoiding starting corners."""
     forbidden = set()
     for (r0, c0) in CORNERS:
         for dr in range(INIT_BODY_SIZE + 2):
@@ -216,7 +135,6 @@ def _decide_move(genome, cr, others_by_team, food_cells, mountains, rivers, rng_
 
     pref_r = pref_c = 0.0
 
-    # food (with hunger urgency + oversize aversion)
     if food_t is not None:
         hunger_factor = 1.0 + genome[1] * (cr.hunger / MAX_HUNGER)
         oversize_factor = 1.0
@@ -227,7 +145,6 @@ def _decide_move(genome, cr, others_by_team, food_cells, mountains, rivers, rng_
         pref_r += scale * np.sign(food_t[0] - centroid_r)
         pref_c += scale * np.sign(food_t[1] - centroid_c)
 
-    # nearest enemy
     if len(enemies) >= 1:
         et, esize = enemies[0]
         ratio = size_self / max(1, esize)
@@ -235,7 +152,6 @@ def _decide_move(genome, cr, others_by_team, food_cells, mountains, rivers, rng_
         pref_r += strength * np.sign(et[0] - centroid_r)
         pref_c += strength * np.sign(et[1] - centroid_c)
 
-    # second enemy
     if len(enemies) >= 2:
         et2, esize2 = enemies[1]
         ratio2 = size_self / max(1, esize2)
@@ -243,17 +159,14 @@ def _decide_move(genome, cr, others_by_team, food_cells, mountains, rivers, rng_
         pref_r += strength2 * np.sign(et2[0] - centroid_r)
         pref_c += strength2 * np.sign(et2[1] - centroid_c)
 
-    # mountain pull
     if mtn_t is not None:
         pref_r += genome[7] * np.sign(mtn_t[0] - centroid_r)
         pref_c += genome[7] * np.sign(mtn_t[1] - centroid_c)
 
-    # river pull
     if riv_t is not None:
         pref_r += genome[8] * np.sign(riv_t[0] - centroid_r)
         pref_c += genome[8] * np.sign(riv_t[1] - centroid_c)
 
-    # wall repulsion
     if genome[6] != 0.0:
         dist_top = centroid_r
         dist_bot = (BOARD - 1) - centroid_r
@@ -268,7 +181,6 @@ def _decide_move(genome, cr, others_by_team, food_cells, mountains, rivers, rng_
         if dist_rgt < WALL_REPULSION_RANGE:
             pref_c -= genome[6] * (WALL_REPULSION_RANGE - dist_rgt)
 
-    # noise
     pref_r += genome[3] * (rng_.random() - 0.5) * 2
     pref_c += genome[3] * (rng_.random() - 0.5) * 2
 
@@ -325,7 +237,7 @@ def _effective_combat_size(cells, mountains):
     raw = len(cells)
     if raw == 0:
         return 0.0
-    mountain_bonus = sum(1 for c in cells if c in mountains)  # +1 per mountain cell
+    mountain_bonus = sum(1 for c in cells if c in mountains)
     if raw > BIG_SIZE_THRESHOLD:
         excess = raw - BIG_SIZE_THRESHOLD
         size = BIG_SIZE_THRESHOLD + excess * OVERSIZE_COMBAT_FACTOR
@@ -336,18 +248,16 @@ def _effective_combat_size(cells, mountains):
 
 def _dilate8(grid):
     out = grid.copy()
-    out[1:, :]   |= grid[:-1, :]
-    out[:-1, :]  |= grid[1:, :]
-    out[:, 1:]   |= grid[:, :-1]
-    out[:, :-1]  |= grid[:, 1:]
-    out[1:, 1:]  |= grid[:-1, :-1]
+    out[1:, :] |= grid[:-1, :]
+    out[:-1, :] |= grid[1:, :]
+    out[:, 1:] |= grid[:, :-1]
+    out[:, :-1] |= grid[:, 1:]
+    out[1:, 1:] |= grid[:-1, :-1]
     out[:-1, :-1] |= grid[1:, 1:]
     out[1:, :-1] |= grid[:-1, 1:]
     out[:-1, 1:] |= grid[1:, :-1]
     return out
 
-
-# ----- world -----
 
 class World:
     def __init__(self, genomes, rng_):
@@ -382,7 +292,6 @@ class World:
         if not alive:
             return
 
-        # determine which creatures actually act this step (oversized = slower)
         movers = []
         for cr in alive:
             size = len(cr.cells)
@@ -413,12 +322,12 @@ class World:
 
         size_order = sorted(plans.keys(), key=lambda t: -len(snapshot[t]))
         claimed = set()
-        # also reserve old positions of non-movers and not-yet-resolved movers
         non_mover_cells = set()
         for cr in alive:
             if cr.team_id not in plans:
                 non_mover_cells |= snapshot[cr.team_id]
         claimed |= non_mover_cells
+
         final_plan = {}
         for tid in size_order:
             plan = plans[tid]
@@ -559,191 +468,3 @@ class World:
                 + bonus
             )
         return out
-
-
-# ----- GA -----
-
-def random_genome(rng_):
-    g = rng_.uniform(-1.0, 1.0, GENOME_SIZE)
-    g[0] = rng_.uniform(0.3, 1.5)   # food pull positive
-    g[2] = rng_.uniform(0.0, 1.5)   # aggression near
-    g[5] = rng_.uniform(0.0, 1.0)   # aggression second
-    g[6] = rng_.uniform(0.0, 1.0)   # wall repulsion
-    g[7] = rng_.uniform(-0.5, 1.0)  # mountain pull (mostly positive)
-    g[8] = rng_.uniform(-0.5, 1.0)  # river pull (mostly positive)
-    g[9] = rng_.uniform(0.0, 1.0)   # oversize aversion (positive)
-    return g
-
-
-def mutate(g, rng_):
-    out = g.copy()
-    mask = rng_.random(GENOME_SIZE) < MUT_RATE
-    n = int(mask.sum())
-    if n:
-        out[mask] += rng_.normal(0.0, MUT_SIGMA, n)
-    return np.clip(out, -2.0, 2.0)
-
-
-def crossover(a, b, rng_):
-    pt = int(rng_.integers(1, GENOME_SIZE))
-    return np.concatenate([a[:pt], b[pt:]])
-
-
-def tournament(pop, scores, rng_):
-    idx = rng_.choice(len(pop), TOURNAMENT_K, replace=False)
-    return pop[max(idx, key=lambda i: scores[i])].copy()
-
-
-# ----- trainer -----
-
-class Trainer:
-    def __init__(self):
-        self.pops = [[random_genome(rng) for _ in range(POP)] for _ in range(3)]
-        self.champions = [self.pops[t][0].copy() for t in range(3)]
-        self.champ_score = [-np.inf] * 3
-        self.gen = 0
-        self.history_best = [[], [], []]
-        self.history_mean = [[], [], []]
-        self.demo_gen = 0
-        self.world = World([c.copy() for c in self.champions], rng)
-
-    def start_demo(self):
-        self.demo_gen = self.gen
-        self.world = World([c.copy() for c in self.champions], rng)
-
-    def evaluate_and_breed(self):
-        idxs = [rng.permutation(POP) for _ in range(3)]
-        scores = [np.zeros(POP) for _ in range(3)]
-        for k in range(POP):
-            triple = [self.pops[t][idxs[t][k]] for t in range(3)]
-            w = World(triple, rng)
-            while not w.done:
-                w.step()
-            fit = w.fitness()
-            for t in range(3):
-                scores[t][idxs[t][k]] = fit[t]
-
-        for t in range(3):
-            self.history_best[t].append(float(scores[t].max()))
-            self.history_mean[t].append(float(scores[t].mean()))
-            best_idx = int(np.argmax(scores[t]))
-            if scores[t][best_idx] > self.champ_score[t]:
-                self.champ_score[t] = float(scores[t][best_idx])
-                self.champions[t] = self.pops[t][best_idx].copy()
-
-        print("gen {:3d} | ".format(self.gen) + " | ".join(
-            "{:6s} best={:7.1f} mean={:7.1f}".format(
-                LABELS[t], self.history_best[t][-1], self.history_mean[t][-1])
-            for t in range(3)))
-
-        for t in range(3):
-            elite_idx = sorted(range(POP), key=lambda i: scores[t][i], reverse=True)[:ELITE]
-            new_pop = [self.pops[t][i].copy() for i in elite_idx]
-            while len(new_pop) < POP:
-                a = tournament(self.pops[t], scores[t], rng)
-                b = tournament(self.pops[t], scores[t], rng)
-                child = mutate(crossover(a, b, rng), rng)
-                new_pop.append(child)
-            self.pops[t] = new_pop
-
-        self.gen += 1
-
-
-trainer = Trainer()
-
-
-# ----- render -----
-
-def render_world(w):
-    img = np.broadcast_to(EMPTY_COLOR_ARR, (BOARD, BOARD, 3)).copy()
-    if w.mountains:
-        rs, cs = zip(*w.mountains)
-        img[list(rs), list(cs)] = MOUNTAIN_COLOR_ARR
-    if w.rivers:
-        rs, cs = zip(*w.rivers)
-        img[list(rs), list(cs)] = RIVER_COLOR_ARR
-    if w.food_cells:
-        rs, cs = zip(*w.food_cells)
-        img[list(rs), list(cs)] = FOOD_COLOR_ARR
-    for ti, cr in enumerate(w.creatures):
-        if not cr.alive or not cr.cells:
-            continue
-        rs, cs = zip(*cr.cells)
-        img[list(rs), list(cs)] = TEAM_COLOR_ARR[ti]
-    return img
-
-
-# ----- figure -----
-
-fig, (ax_board, ax_fit) = plt.subplots(1, 2, figsize=(13, 7),
-                                       gridspec_kw={"width_ratios": [1, 1]})
-ax_board.set_xticks([])
-ax_board.set_yticks([])
-im = ax_board.imshow(render_world(trainer.world), interpolation="nearest")
-title = ax_board.set_title("gen 0 demo — step 0")
-
-ax_fit.set_xlim(0, GENERATIONS)
-ax_fit.set_xlabel("generation")
-ax_fit.set_ylabel("fitness")
-ax_fit.set_title("learning curves")
-ax_fit.grid(alpha=0.3)
-fit_lines_best = [
-    ax_fit.plot([], [], color=TEAM_COLORS[t], linewidth=2, label=f"{LABELS[t]} best")[0]
-    for t in range(3)
-]
-fit_lines_mean = [
-    ax_fit.plot([], [], color=TEAM_COLORS[t], linewidth=1, alpha=0.4, linestyle="--",
-                label=f"{LABELS[t]} mean")[0]
-    for t in range(3)
-]
-ax_fit.legend(ncol=3, fontsize=8, loc="upper left")
-
-status = fig.text(0.5, 0.02, "", ha="center", fontsize=9)
-
-
-def update_fit_lines():
-    for t in range(3):
-        x = list(range(len(trainer.history_best[t])))
-        fit_lines_best[t].set_data(x, trainer.history_best[t])
-        fit_lines_mean[t].set_data(x, trainer.history_mean[t])
-    ax_fit.relim()
-    ax_fit.autoscale_view()
-
-
-def update(_):
-    w = trainer.world
-    if not w.done:
-        for _ in range(STEPS_PER_FRAME):
-            if w.done:
-                break
-            w.step()
-    if w.done:
-        if trainer.gen < GENERATIONS:
-            trainer.evaluate_and_breed()
-            update_fit_lines()
-            trainer.start_demo()
-        else:
-            anim.event_source.stop()
-            title.set_text(f"training complete — final demo ended ({w.end_reason})")
-            return [im, title, status]
-
-    im.set_data(render_world(trainer.world))
-    parts = []
-    for i, cr in enumerate(trainer.world.creatures):
-        if cr.alive:
-            parts.append(f"{LABELS[i]}: size={len(cr.cells)} h={cr.hunger}")
-        else:
-            parts.append(f"{LABELS[i]}: DEAD")
-    title.set_text(
-        f"gen {trainer.demo_gen} demo — step {trainer.world.step_no}"
-        f"  |  food={len(trainer.world.food_cells)}"
-    )
-    status.set_text("   ".join(parts))
-    return [im, title, status]
-
-
-anim = animation.FuncAnimation(
-    fig, update, interval=FRAME_INTERVAL, blit=False, repeat=False, cache_frame_data=False
-)
-plt.tight_layout(rect=(0, 0.04, 1, 1))
-plt.show()
