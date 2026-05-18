@@ -42,7 +42,7 @@ import numpy as np
 # ----- config -----
 SEED = None
 
-BOARD = 100
+BOARD = 70
 FOOD_TARGET = 100
 SPAWN_TRIES = 8
 STALEMATE_CAP = 600
@@ -97,7 +97,7 @@ WIN_BONUS = 300.0
 
 # render
 FRAME_INTERVAL = 30
-STEPS_PER_FRAME = 1
+STEPS_PER_FRAME = 5
 
 SPECIES_COLORS = [
     (1.0, 0.2, 0.2),   # red
